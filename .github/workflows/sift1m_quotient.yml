@@ -17,7 +17,6 @@ jobs:
       OMP_NUM_THREADS: "4"
       OPENBLAS_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      NUMBA_NUM_THREADS: "4"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -26,23 +25,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Fetch and assemble experiment
-        run: |
-          mkdir -p experiments
-          for p in 00 01 02 03 04; do
-            curl -L --fail --retry 5 \
-              "https://raw.githubusercontent.com/wangsibovictor/ann-benchmarks/agent/sift1m-quotient-20260807/experiments/sift1m_quotient_experiment.py.part${p}" \
-              -o "experiments/part${p}"
-          done
-          cat experiments/part* > experiments/sift1m_quotient_experiment.py
-          python -m py_compile experiments/sift1m_quotient_experiment.py
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
-            numpy==1.26.4 scipy==1.13.1 pandas==2.2.2 h5py==3.11.0 \
-            matplotlib==3.9.2 numba==0.60.0 faiss-cpu==1.8.0.post1
+            numpy==1.26.4 pandas==2.2.2 h5py==3.11.0 faiss-cpu==1.8.0.post1
+          python -m py_compile experiments/sift1m_1pct_experiment.py
 
       - name: Download SIFT1M
         run: |
@@ -50,17 +38,25 @@ jobs:
           curl -L --fail --retry 5 --retry-delay 5 \
             https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
             -o data/sift-128-euclidean.hdf5
+          ls -lh data/sift-128-euclidean.hdf5
 
       - name: Run one-percent sweep
         run: |
           mkdir -p results
-          /usr/bin/time -v python experiments/sift1m_quotient_experiment.py \
+          /usr/bin/time -v python experiments/sift1m_1pct_experiment.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/sift1m_quotient_1pct \
+            --out results/sift1m_1pct \
             --queries 60 --threads 4 --M 8 --ef-construction 80 \
-            --selectivities 0.01 \
-            --quotient-efs 32,64,128,256,512,1024,2048 \
-            --max-post-pool 20000 2>&1 | tee results/one_percent_run.log
+            --selectivity 0.01 \
+            --efs 32,64,128,256,512,1024,2048 \
+            2>&1 | tee results/one_percent_run.log
+
+      - name: Inspect outputs
+        if: always()
+        run: |
+          find results -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
+          free -h
+          df -h
 
       - name: Upload results
         if: always()
