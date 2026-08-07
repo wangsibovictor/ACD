@@ -1,0 +1,112 @@
+name: SIFT1M quotient experiment
+
+on:
+  push:
+    branches:
+      - agent/sift1m-quotient-run-20260807
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      NUMBA_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch and assemble experiment
+        run: |
+          mkdir -p experiments
+          for p in 00 01 02 03 04; do
+            curl -L --fail --retry 5 \
+              "https://raw.githubusercontent.com/wangsibovictor/ann-benchmarks/agent/sift1m-quotient-20260807/experiments/sift1m_quotient_experiment.py.part${p}" \
+              -o "experiments/part${p}"
+          done
+          cat experiments/part* > experiments/sift1m_quotient_experiment.py
+          python -m py_compile experiments/sift1m_quotient_experiment.py
+          sha256sum experiments/sift1m_quotient_experiment.py
+
+      - name: Inspect runner and add swap
+        run: |
+          nproc
+          free -h
+          df -h
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            numpy==1.26.4 scipy==1.13.1 pandas==2.2.2 h5py==3.11.0 \
+            matplotlib==3.9.2 numba==0.60.0 faiss-cpu==1.8.0.post1
+          python - <<'PY'
+          import faiss, h5py, numba, numpy, pandas
+          print("faiss", faiss.__version__)
+          print("numpy", numpy.__version__)
+          print("h5py", h5py.__version__)
+          print("numba", numba.__version__)
+          print("pandas", pandas.__version__)
+          PY
+
+      - name: Download SIFT1M
+        run: |
+          mkdir -p data
+          curl -L --fail --retry 5 --retry-delay 5 \
+            https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
+            -o data/sift-128-euclidean.hdf5
+          ls -lh data/sift-128-euclidean.hdf5
+          python - <<'PY'
+          import h5py
+          with h5py.File("data/sift-128-euclidean.hdf5", "r") as f:
+              print({k: f[k].shape for k in f.keys()})
+          PY
+
+      - name: Smoke test
+        run: |
+          python experiments/sift1m_quotient_experiment.py \
+            --smoke --out results/smoke --queries 18 --threads 4 \
+            --selectivities 0.1,0.02 --quotient-efs 8,16 --max-post-pool 2000
+          rm -rf results/smoke
+
+      - name: Full SIFT1M experiment
+        run: |
+          mkdir -p results
+          /usr/bin/time -v python experiments/sift1m_quotient_experiment.py \
+            --dataset data/sift-128-euclidean.hdf5 \
+            --out results/sift1m_quotient \
+            --queries 60 --threads 4 --M 8 --ef-construction 80 \
+            --selectivities 0.1,0.02,0.005,0.001 \
+            --quotient-efs 8,16,32,64,128 \
+            --max-post-pool 20000 2>&1 | tee results/full_run.log
+
+      - name: Inspect outputs
+        if: always()
+        run: |
+          find results -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
+          free -h
+          df -h
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sift1m-quotient-results
+          path: results/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6
