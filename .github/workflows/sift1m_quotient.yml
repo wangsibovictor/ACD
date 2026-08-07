@@ -79,16 +79,16 @@ jobs:
             --selectivities 0.1,0.02 --quotient-efs 8,16 --max-post-pool 2000
           rm -rf results/smoke
 
-      - name: Full SIFT1M experiment
+      - name: Full SIFT1M geometric-cell experiment
         run: |
           mkdir -p results
           /usr/bin/time -v python experiments/sift1m_quotient_experiment.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/sift1m_quotient \
+            --out results/sift1m_quotient_geo \
             --queries 60 --threads 4 --M 8 --ef-construction 80 \
             --selectivities 0.1,0.02,0.005,0.001 \
-            --quotient-efs 8,16,32,64,128 \
-            --max-post-pool 20000 2>&1 | tee results/full_run.log
+            --quotient-efs 32,64,128,256,512,1024,2048 \
+            --max-post-pool 20000 2>&1 | tee results/full_geo_run.log
 
       - name: Inspect outputs
         if: always()
@@ -101,7 +101,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sift1m-quotient-results
+          name: sift1m-quotient-geo-results
           path: results/
           if-no-files-found: warn
           retention-days: 7
