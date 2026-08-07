@@ -1,4 +1,4 @@
-name: SIFT1M quotient experiment
+name: SIFT1M quotient 1-percent experiment
 
 on:
   push:
@@ -36,13 +36,6 @@ jobs:
           done
           cat experiments/part* > experiments/sift1m_quotient_experiment.py
           python -m py_compile experiments/sift1m_quotient_experiment.py
-          sha256sum experiments/sift1m_quotient_experiment.py
-
-      - name: Inspect runner
-        run: |
-          nproc
-          free -h
-          df -h
 
       - name: Install dependencies
         run: |
@@ -50,14 +43,6 @@ jobs:
           python -m pip install \
             numpy==1.26.4 scipy==1.13.1 pandas==2.2.2 h5py==3.11.0 \
             matplotlib==3.9.2 numba==0.60.0 faiss-cpu==1.8.0.post1
-          python - <<'PY'
-          import faiss, h5py, numba, numpy, pandas
-          print("faiss", faiss.__version__)
-          print("numpy", numpy.__version__)
-          print("h5py", h5py.__version__)
-          print("numba", numba.__version__)
-          print("pandas", pandas.__version__)
-          PY
 
       - name: Download SIFT1M
         run: |
@@ -65,43 +50,23 @@ jobs:
           curl -L --fail --retry 5 --retry-delay 5 \
             https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
             -o data/sift-128-euclidean.hdf5
-          ls -lh data/sift-128-euclidean.hdf5
-          python - <<'PY'
-          import h5py
-          with h5py.File("data/sift-128-euclidean.hdf5", "r") as f:
-              print({k: f[k].shape for k in f.keys()})
-          PY
 
-      - name: Smoke test
-        run: |
-          python experiments/sift1m_quotient_experiment.py \
-            --smoke --out results/smoke --queries 18 --threads 4 \
-            --selectivities 0.1,0.02 --quotient-efs 8,16 --max-post-pool 2000
-          rm -rf results/smoke
-
-      - name: Full SIFT1M geometric-cell experiment
+      - name: Run one-percent sweep
         run: |
           mkdir -p results
           /usr/bin/time -v python experiments/sift1m_quotient_experiment.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/sift1m_quotient_geo \
+            --out results/sift1m_quotient_1pct \
             --queries 60 --threads 4 --M 8 --ef-construction 80 \
-            --selectivities 0.1,0.02,0.005,0.001 \
+            --selectivities 0.01 \
             --quotient-efs 32,64,128,256,512,1024,2048 \
-            --max-post-pool 20000 2>&1 | tee results/full_geo_run.log
-
-      - name: Inspect outputs
-        if: always()
-        run: |
-          find results -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
-          free -h
-          df -h
+            --max-post-pool 20000 2>&1 | tee results/one_percent_run.log
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sift1m-quotient-geo-results
+          name: sift1m-quotient-1pct-results
           path: results/
           if-no-files-found: warn
           retention-days: 7
