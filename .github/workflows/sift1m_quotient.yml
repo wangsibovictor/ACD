@@ -38,15 +38,11 @@ jobs:
           python -m py_compile experiments/sift1m_quotient_experiment.py
           sha256sum experiments/sift1m_quotient_experiment.py
 
-      - name: Inspect runner and add swap
+      - name: Inspect runner
         run: |
           nproc
           free -h
           df -h
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
 
       - name: Install dependencies
         run: |
