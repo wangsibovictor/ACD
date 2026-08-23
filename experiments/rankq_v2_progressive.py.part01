@@ -1,0 +1,259 @@
+        chosen = base_nb[active[base_nb]]
+        checks += int(base_nb.size)
+        if chosen.size < degree_target:
+            fa, fz = int(full_indptr[u]), int(full_indptr[u + 1])
+            full_nb = full_indices[fa:fz]
+            reads += int(full_nb.size)
+            checks += int(full_nb.size)
+            cand = full_nb[active[full_nb]]
+            if cand.size:
+                if chosen.size:
+                    cand = cand[~np.isin(cand, chosen, assume_unique=False)]
+                if cand.size:
+                    cand_ds = rq.l2_batch(xb[portals[cand]], q)
+                    portal_comps += int(cand.size)
+                    weight = 1.0 + capacity_lambda * np.log1p(counts[cand].astype(np.float64))
+                    score = cand_ds / weight
+                    need = min(max_extra, max(0, degree_target - int(chosen.size)))
+                    if cand.size > need > 0:
+                        pos = np.argpartition(score, need - 1)[:need]
+                        extra = cand[pos]
+                        extra_ds = cand_ds[pos]
+                    else:
+                        extra = cand[:need]
+                        extra_ds = cand_ds[:need]
+                    if extra.size:
+                        distance_cache[extra] = extra_ds
+                        chosen = np.unique(np.concatenate((chosen, extra))).astype(np.int32)
+        if chosen.size == 0:
+            continue
+        unseen = chosen[visited[chosen] == 0]
+        if unseen.size == 0:
+            continue
+        visited[unseen] = 1
+        cached = distance_cache[unseen]
+        miss = np.isnan(cached)
+        if np.any(miss):
+            ds_new = rq.l2_batch(xb[portals[unseen[miss]]], q)
+            portal_comps += int(np.count_nonzero(miss))
+            cached[miss] = ds_new
+            distance_cache[unseen[miss]] = ds_new
+        for dv, v0 in zip(cached.tolist(), unseen.tolist()):
+            v = int(v0)
+            if len(top) < ef or dv < -top[0][0]:
+                heapq.heappush(candidates, (float(dv), v))
+                heapq.heappush(top, (-float(dv), v))
+                if len(top) > ef:
+                    heapq.heappop(top)
+    selected = np.asarray([u for _, u in sorted([(-d, u) for d, u in top])], dtype=np.int32)
+    return CellSearchResult(
+        selected_cells=selected,
+        portal_computations=portal_comps,
+        adjacency_reads=reads,
+        visited_cells=int(np.count_nonzero(visited)),
+        summary_checks=checks,
+        latency_ms=1000.0 * (time.perf_counter() - t0),
+    )
+
+
+def adaptive_copy_graph(
+    copy_graphs: Sequence[Tuple[np.ndarray, np.ndarray]],
+    active: np.ndarray,
+    degree_target: int,
+    max_copies: int,
+) -> Tuple[np.ndarray, np.ndarray, int, float, float]:
+    """Add independent B8 copies until each active source has enough active exits."""
+    n = len(active)
+    src_parts: List[np.ndarray] = []
+    dst_parts: List[np.ndarray] = []
+    checks = 0
+    copies_used: List[int] = []
+    active_degrees: List[int] = []
+    for u in np.flatnonzero(active).tolist():
+        acc: List[np.ndarray] = []
+        unique = np.empty(0, dtype=np.int32)
+        used = 0
+        for ip, ix in copy_graphs[:max_copies]:
+            a, z = int(ip[u]), int(ip[u + 1])
+            nb = ix[a:z]
+            checks += int(nb.size)
+            good = nb[active[nb]]
+            if good.size:
+                acc.append(good)
+                unique = np.unique(np.concatenate(acc)).astype(np.int32)
+            used += 1
+            if unique.size >= degree_target:
+                break
+        copies_used.append(used)
+        active_degrees.append(int(unique.size))
+        if unique.size:
+            src_parts.append(np.full(unique.size, u, dtype=np.int32))
+            dst_parts.append(unique)
+    if not src_parts:
+        return (
+            np.zeros(n + 1, dtype=np.int64),
+            np.empty(0, dtype=np.int32),
+            checks,
+            float(np.mean(copies_used)) if copies_used else 0.0,
+            0.0,
+        )
+    src = np.concatenate(src_parts)
+    dst = np.concatenate(dst_parts)
+    keys = src.astype(np.int64) * n + dst.astype(np.int64)
+    ip, ix = rq.keys_to_csr(keys, n)
+    return (
+        ip,
+        ix,
+        checks,
+        float(np.mean(copies_used)),
+        float(np.mean(active_degrees)),
+    )
+
+
+def make_virtual_portals(
+    levels_raw: np.ndarray,
+    low_level: int,
+    high_level: int,
+    target_rate: float,
+    seed: int,
+) -> np.ndarray:
+    low = rq.portal_ids(levels_raw, low_level)
+    high = rq.portal_ids(levels_raw, high_level)
+    n = len(levels_raw)
+    target_n = max(len(high), min(len(low), int(round(target_rate * n))))
+    high_mask = np.zeros(n, dtype=bool)
+    high_mask[high] = True
+    candidates = low[~high_mask[low]]
+    need = target_n - len(high)
+    if need <= 0:
+        return np.sort(high).astype(np.int32)
+    ranks = rq.splitmix64_array(candidates.astype(np.uint64) ^ np.uint64(seed))
+    if need < len(candidates):
+        pos = np.argpartition(ranks, need - 1)[:need]
+        chosen = candidates[pos]
+    else:
+        chosen = candidates
+    return np.sort(np.concatenate((high, chosen))).astype(np.int32)
+
+
+def build_level_index(
+    name: str,
+    xb: np.ndarray,
+    adj: np.ndarray,
+    portals: np.ndarray,
+    threads: int,
+    b: int,
+    copies: int,
+    seed: int,
+) -> LevelIndex:
+    cells, assignment_seconds, cell_stats = rq.assign_geometric_cells(xb, portals, threads)
+    full_ip, full_ix, contract_seconds = rq.contract_graph(adj, cells, len(portals))
+    copy_list: List[Tuple[np.ndarray, np.ndarray]] = []
+    for ci in range(copies):
+        ranks, _ = rq.edge_randoms(full_ip, full_ix, seed + 1_000_003 * ci)
+        copy_list.append(rq.uniform_bottomk_graph(full_ip, full_ix, ranks, len(portals), b))
+    return LevelIndex(
+        name=name,
+        portals=portals,
+        cells=cells,
+        full_indptr=full_ip,
+        full_indices=full_ix,
+        copies={(b, 0): copy_list},
+        cell_stats=cell_stats,
+        assignment_seconds=assignment_seconds,
+        contract_seconds=contract_seconds,
+    )
+
+
+def build_witness_index(
+    lower: LevelIndex,
+    upper_portals: np.ndarray,
+    xb: np.ndarray,
+    threads: int,
+) -> Tuple[WitnessIndex, float]:
+    parent, parent_seconds = rq.assign_portal_parents(xb, lower.portals, upper_portals, threads)
+    child_ip, child_ix = rq.children_csr(parent, len(upper_portals))
+    src = rq.edge_sources(lower.full_indptr)
+    dst = lower.full_indices
+    up_src = parent[src]
+    up_dst = parent[dst]
+    cross = up_src != up_dst
+    up_keys = up_src[cross].astype(np.int64) * len(upper_portals) + up_dst[cross].astype(np.int64)
+    edge_keys = np.unique(up_keys)
+    upper_ip, upper_ix = rq.keys_to_csr(edge_keys, len(upper_portals))
+    witness_code = up_keys.astype(np.int64) * len(lower.portals) + dst[cross].astype(np.int64)
+    witness_code = np.unique(witness_code)
+    witness_edge_key = witness_code // len(lower.portals)
+    witness_child = (witness_code % len(lower.portals)).astype(np.int32)
+    edge_pos = np.searchsorted(edge_keys, witness_edge_key)
+    order = np.argsort(edge_pos, kind="stable")
+    edge_pos = edge_pos[order]
+    witness_child = witness_child[order]
+    counts = np.bincount(edge_pos, minlength=len(edge_keys))
+    witness_ip = np.empty(len(edge_keys) + 1, dtype=np.int64)
+    witness_ip[0] = 0
+    np.cumsum(counts, out=witness_ip[1:])
+    return (
+        WitnessIndex(
+            upper_portals=upper_portals,
+            parent=parent,
+            child_indptr=child_ip,
+            child_indices=child_ix,
+            upper_indptr=upper_ip,
+            upper_indices=upper_ix,
+            edge_keys=edge_keys,
+            witness_indptr=witness_ip,
+            witness_children=witness_child,
+        ),
+        parent_seconds,
+    )
+
+
+def witness_descent_seeds(
+    xb: np.ndarray,
+    q: np.ndarray,
+    lower: LevelIndex,
+    witness: WitnessIndex,
+    upper_graph: Tuple[np.ndarray, np.ndarray],
+    selected_upper: np.ndarray,
+    counts_lower: np.ndarray,
+    seed_budget: int,
+) -> Tuple[np.ndarray, int, int, int, float]:
+    t0 = time.perf_counter()
+    n_upper = len(witness.upper_portals)
+    candidates: List[np.ndarray] = []
+    child_reads = 0
+    summary_checks = 0
+    for u in selected_upper.tolist():
+        # One local active child protects the current coarse region.
+        ca, cz = int(witness.child_indptr[u]), int(witness.child_indptr[u + 1])
+        local = witness.child_indices[ca:cz]
+        child_reads += int(local.size)
+        summary_checks += int(local.size)
+        local = local[counts_lower[local] > 0]
+        if local.size:
+            candidates.append(local)
+        # Edge-specific witness destinations protect shortcut landing regions.
+        a, z = int(upper_graph[0][u]), int(upper_graph[0][u + 1])
+        for v in upper_graph[1][a:z].tolist():
+            key = int(u) * n_upper + int(v)
+            ep = int(np.searchsorted(witness.edge_keys, key))
+            if ep >= len(witness.edge_keys) or int(witness.edge_keys[ep]) != key:
+                continue
+            wa, wz = int(witness.witness_indptr[ep]), int(witness.witness_indptr[ep + 1])
+            ch = witness.witness_children[wa:wz]
+            child_reads += int(ch.size)
+            summary_checks += int(ch.size)
+            ch = ch[counts_lower[ch] > 0]
+            if ch.size:
+                candidates.append(ch)
+    if not candidates:
+        return np.empty(0, dtype=np.int32), 0, summary_checks, child_reads, 0.0
+    cand = np.unique(np.concatenate(candidates)).astype(np.int32)
+    ds = rq.l2_batch(xb[lower.portals[cand]], q)
+    comps = int(cand.size)
+    keep = min(seed_budget, cand.size)
+    if cand.size > keep:
+        pos = np.argpartition(ds, keep - 1)[:keep]
+        cand = cand[pos]
+    return cand, comps, summary_checks, child_reads, 1000.0 * (time.perf_counter() - t0)
