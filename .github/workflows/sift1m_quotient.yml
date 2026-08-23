@@ -1,4 +1,4 @@
-name: SIFT1M quotient 1-percent experiment
+name: RankQ summary-aware SIFT1M experiment
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   benchmark:
@@ -38,31 +38,40 @@ jobs:
           curl -L --fail --retry 5 --retry-delay 5 \
             https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
             -o data/sift-128-euclidean.hdf5
-          ls -lh data/sift-128-euclidean.hdf5
 
-      - name: Run one-percent sweep
+      - name: Run summary-aware suite
         run: |
           mkdir -p results
           /usr/bin/time -v python experiments/sift1m_1pct_experiment.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/sift1m_1pct \
-            --queries 60 --threads 4 --M 8 --ef-construction 80 \
+            --out results/rankq_summary \
+            --queries 30 --threads 4 --M 8 --ef-construction 80 \
             --selectivity 0.01 \
-            --efs 32,64,128,256,512,1024,2048 \
-            2>&1 | tee results/one_percent_run.log
+            --efs 32,64,128,256 \
+            2>&1 | tee results/rankq_summary_run.log
 
-      - name: Inspect outputs
-        if: always()
+      - name: Commit compact results
+        if: success()
         run: |
-          find results -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
-          free -h
-          df -h
+          mkdir -p experiment_outputs/rankq_summary
+          cp results/rankq_summary/summary.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/structural.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/materialization.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/index_levels.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/hnsw_levels.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/selectivity_estimator.csv experiment_outputs/rankq_summary/
+          cp results/rankq_summary/metadata.json experiment_outputs/rankq_summary/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiment_outputs/rankq_summary
+          git commit -m "Add RankQ summary-aware SIFT1M results [skip ci]"
+          git push
 
-      - name: Upload results
+      - name: Upload full results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sift1m-quotient-1pct-results
+          name: rankq-summary-sift1m-results
           path: results/
           if-no-files-found: warn
           retention-days: 7
