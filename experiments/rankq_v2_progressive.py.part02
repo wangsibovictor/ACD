@@ -1,0 +1,201 @@
+
+
+def payload_answer(
+    xb: np.ndarray,
+    q: np.ndarray,
+    qualified: np.ndarray,
+    qoff: np.ndarray,
+    selected_cells: np.ndarray,
+) -> Tuple[np.ndarray, int, float]:
+    t0 = time.perf_counter()
+    parts: List[np.ndarray] = []
+    for c in selected_cells.tolist():
+        a, z = int(qoff[c]), int(qoff[c + 1])
+        if z > a:
+            parts.append(qualified[a:z])
+    if not parts:
+        return np.empty(0, dtype=np.int32), 0, 1000.0 * (time.perf_counter() - t0)
+    payload = np.concatenate(parts)
+    answer = rq.topk_ids(xb, q, payload, 10)
+    return answer, int(payload.size), 1000.0 * (time.perf_counter() - t0)
+
+
+def append_result(
+    rows: List[Dict[str, object]],
+    method: str,
+    selectivity: float,
+    mask_seed: int,
+    qid: int,
+    parameter: int,
+    level_name: str,
+    search: CellSearchResult,
+    answer: np.ndarray,
+    truth: np.ndarray,
+    payload_computations: int,
+    payload_ms: float,
+    valid_count: int,
+    materialization_ms: float,
+    materialization_checks: int,
+    extra_portal_computations: int = 0,
+    extra_adjacency_reads: int = 0,
+    extra_summary_checks: int = 0,
+    extra_child_reads: int = 0,
+    extra_latency_ms: float = 0.0,
+    copies_used_mean: float = 0.0,
+    active_degree_mean: float = 0.0,
+) -> None:
+    rows.append(
+        {
+            "method": method,
+            "selectivity": selectivity,
+            "mask_seed": mask_seed,
+            "query": qid,
+            "parameter": parameter,
+            "level_name": level_name,
+            "recall": rq.recall_at_10(answer, truth),
+            "distance_computations": extra_portal_computations + search.portal_computations + payload_computations,
+            "portal_computations": extra_portal_computations + search.portal_computations,
+            "payload_computations": payload_computations,
+            "adjacency_reads": extra_adjacency_reads + search.adjacency_reads,
+            "visited_cells": search.visited_cells,
+            "summary_checks_query": extra_summary_checks + search.summary_checks,
+            "child_reads_query": extra_child_reads,
+            "latency_ms": extra_latency_ms + search.latency_ms + payload_ms,
+            "valid_count": valid_count,
+            "materialization_ms": materialization_ms,
+            "materialization_summary_checks": materialization_checks,
+            "copies_used_mean": copies_used_mean,
+            "active_degree_mean": active_degree_mean,
+        }
+    )
+
+
+def choose_level_index(levels: Mapping[str, LevelIndex], s: float) -> LevelIndex:
+    scored = []
+    for name, idx in levels.items():
+        rate = len(idx.portals) / len(idx.cells)
+        scored.append((abs(math.log(rate / s)), name, idx))
+    scored.sort(key=lambda x: x[0])
+    return scored[0][2]
+
+
+def run(args: argparse.Namespace) -> None:
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with h5py.File(args.dataset, "r") as f:
+        xb = np.asarray(f["train"], dtype=np.float32)
+        xq = np.asarray(f["test"][: args.queries], dtype=np.float32)
+    n, d = xb.shape
+    selectivities = [float(x) for x in args.selectivities.split(",")]
+    efs = [int(x) for x in args.efs.split(",")]
+    post_pools = [int(x) for x in args.postfilter_pools.split(",")]
+    log(f"loaded dataset xb={xb.shape}, queries={len(xq)}, s={selectivities}")
+
+    index, build_seconds = rq.build_hnsw(xb, args.M, args.ef_construction, args.threads)
+    levels_raw, adj, base_actual_edges, hnsw_neighbor_slots = rq.extract_layer0(index, n)
+
+    l2 = rq.portal_ids(levels_raw, 2)
+    l3 = rq.portal_ids(levels_raw, 3)
+    l4 = rq.portal_ids(levels_raw, 4)
+    v08 = make_virtual_portals(levels_raw, 2, 3, args.virtual_rate_hi, args.seed + 8101)
+    v04 = make_virtual_portals(levels_raw, 2, 3, args.virtual_rate_lo, args.seed + 4101)
+    portal_sets = {
+        "L2": l2,
+        "V08": v08,
+        "V04": v04,
+        "L3": l3,
+    }
+
+    level_indices: Dict[str, LevelIndex] = {}
+    index_rows: List[Dict[str, object]] = []
+    for li, (name, portals) in enumerate(portal_sets.items()):
+        log(f"building level {name}: portals={len(portals):,}, rate={len(portals)/n:.6f}")
+        idx = build_level_index(
+            name,
+            xb,
+            adj,
+            portals,
+            args.threads,
+            args.bottom_b,
+            args.max_copies,
+            args.seed + 100_000 * li,
+        )
+        level_indices[name] = idx
+        copies = idx.copies[(args.bottom_b, 0)]
+        index_rows.append(
+            {
+                "level_name": name,
+                "n_cells": len(portals),
+                "sampling_rate": len(portals) / n,
+                "mean_cell_size": n / len(portals),
+                "assignment_seconds": idx.assignment_seconds,
+                "contract_seconds": idx.contract_seconds,
+                "full_edges": int(idx.full_indices.size),
+                "copy1_edges": int(copies[0][1].size),
+                "copy4_union_edges": int(csr_union(copies[: min(4, len(copies))], len(portals))[1].size),
+                "copy8_union_edges": int(csr_union(copies[: min(8, len(copies))], len(portals))[1].size),
+                **{f"cell_{k}": v for k, v in idx.cell_stats.items()},
+            }
+        )
+
+    witnesses: Dict[str, WitnessIndex] = {}
+    witness_upper_copy: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    witness_rows: List[Dict[str, object]] = []
+    for wi, (name, idx) in enumerate(level_indices.items()):
+        upper_portals = l4 if name == "L3" else l3
+        witness, parent_seconds = build_witness_index(idx, upper_portals, xb, args.threads)
+        ranks, _ = rq.edge_randoms(
+            witness.upper_indptr,
+            witness.upper_indices,
+            args.seed + 700_000 + wi,
+        )
+        upper_copy = rq.uniform_bottomk_graph(
+            witness.upper_indptr,
+            witness.upper_indices,
+            ranks,
+            len(upper_portals),
+            args.bottom_b,
+        )
+        witnesses[name] = witness
+        witness_upper_copy[name] = upper_copy
+        witness_rows.append(
+            {
+                "level_name": name,
+                "upper_cells": len(upper_portals),
+                "parent_seconds": parent_seconds,
+                "upper_full_edges": int(witness.upper_indices.size),
+                "upper_copy_edges": int(upper_copy[1].size),
+                "witness_children": int(witness.witness_children.size),
+                "mean_witness_children_per_upper_edge": witness.witness_children.size / max(witness.upper_indices.size, 1),
+            }
+        )
+
+    pd.DataFrame(index_rows).to_csv(out / "index_levels.csv", index=False)
+    pd.DataFrame(witness_rows).to_csv(out / "witness_index.csv", index=False)
+
+    masks_by_s: Dict[float, List[np.ndarray]] = {
+        s: [
+            rq.independent_mask(n, s, args.seed + int(round(s * 1e9)) + 1000 * mi)
+            for mi in range(args.mask_seeds)
+        ]
+        for s in selectivities
+    }
+    rq.estimator_table(levels_raw, masks_by_s).to_csv(out / "selectivity_estimator.csv", index=False)
+
+    index.hnsw.efSearch = 64
+    _, entry_ids = index.search(xq, 1)
+    entry_ids = entry_ids[:, 0].astype(np.int32)
+
+    max_pool = max(post_pools)
+    index.hnsw.efSearch = max_pool
+    tpost = time.perf_counter()
+    _, post_candidates = index.search(xq, max_pool)
+    post_ms_per_query = 1000.0 * (time.perf_counter() - tpost) / len(xq)
+
+    rows: List[Dict[str, object]] = []
+    materialization_rows: List[Dict[str, object]] = []
+    structural_rows: List[Dict[str, object]] = []
+    qids_by_mask = {
+        mi: [qid for qid in range(len(xq)) if qid % args.mask_seeds == mi]
+        for mi in range(args.mask_seeds)
+    }
