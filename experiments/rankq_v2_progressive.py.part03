@@ -1,0 +1,319 @@
+
+    def graph_degree(ip: np.ndarray, active_mask: np.ndarray) -> Tuple[float, float]:
+        deg = np.diff(ip)[active_mask]
+        if deg.size == 0:
+            return 0.0, 1.0
+        return float(deg.mean()), float(np.mean(deg == 0))
+
+    for s in selectivities:
+        level = choose_level_index(level_indices, s)
+        native_level = min(
+            (level_indices["L2"], level_indices["L3"]),
+            key=lambda idx: abs(math.log((len(idx.portals) / n) / s)),
+        )
+        copies = level.copies[(args.bottom_b, 0)]
+        copy_counts = [c for c in (1, 2, 4, 8) if c <= len(copies)]
+        union_cache = {c: csr_union(copies[:c], len(level.portals)) for c in copy_counts}
+        witness = witnesses[level.name]
+        upper_copy = witness_upper_copy[level.name]
+        log(
+            f"s={s:g}: theory-matched={level.name} rate={len(level.portals)/n:.6f}; "
+            f"native={native_level.name} rate={len(native_level.portals)/n:.6f}"
+        )
+
+        for mi, mask in enumerate(masks_by_s[s]):
+            qualified, qoff, counts = rq.grouped_ids(level.cells, mask, len(level.portals))
+            active = counts > 0
+            valid_count = int(qualified.size)
+
+            graph_variants: Dict[str, Tuple[np.ndarray, np.ndarray, float, int, float, float]] = {}
+            for c in copy_counts:
+                tmat = time.perf_counter()
+                ip, ix, checks = filter_active_csr(union_cache[c][0], union_cache[c][1], active)
+                mat_ms = 1000.0 * (time.perf_counter() - tmat)
+                mean_deg, zero_deg = graph_degree(ip, active)
+                graph_variants[f"active_c{c}"] = (ip, ix, mat_ms, checks, float(c), mean_deg)
+                materialization_rows.append(
+                    {
+                        "selectivity": s,
+                        "mask_seed": mi,
+                        "level_name": level.name,
+                        "method": f"active_c{c}",
+                        "active_cells": int(active.sum()),
+                        "edges": int(ix.size),
+                        "mean_active_degree": mean_deg,
+                        "zero_active_degree": zero_deg,
+                        "materialization_ms": mat_ms,
+                        "summary_checks": checks,
+                        "copies_used_mean": float(c),
+                    }
+                )
+
+            tmat = time.perf_counter()
+            ad_ip, ad_ix, ad_checks, copies_used, ad_degree = adaptive_copy_graph(
+                copies,
+                active,
+                args.degree_target,
+                args.adaptive_max_copies,
+            )
+            ad_ms = 1000.0 * (time.perf_counter() - tmat)
+            _, ad_zero = graph_degree(ad_ip, active)
+            graph_variants["adaptive_deg"] = (
+                ad_ip,
+                ad_ix,
+                ad_ms,
+                ad_checks,
+                copies_used,
+                ad_degree,
+            )
+            materialization_rows.append(
+                {
+                    "selectivity": s,
+                    "mask_seed": mi,
+                    "level_name": level.name,
+                    "method": "adaptive_deg",
+                    "active_cells": int(active.sum()),
+                    "edges": int(ad_ix.size),
+                    "mean_active_degree": ad_degree,
+                    "zero_active_degree": ad_zero,
+                    "materialization_ms": ad_ms,
+                    "summary_checks": ad_checks,
+                    "copies_used_mean": copies_used,
+                }
+            )
+
+            tmat = time.perf_counter()
+            rt_ip, rt_ix, rt_checks, router_count = certified_router_csr(
+                copies[0][0], copies[0][1], active, min_active_fanout=1
+            )
+            rt_ms = 1000.0 * (time.perf_counter() - tmat)
+            rt_degree, rt_zero = graph_degree(rt_ip, active)
+            graph_variants["router1hop"] = (rt_ip, rt_ix, rt_ms, rt_checks, 1.0, rt_degree)
+            materialization_rows.append(
+                {
+                    "selectivity": s,
+                    "mask_seed": mi,
+                    "level_name": level.name,
+                    "method": "router1hop",
+                    "active_cells": int(active.sum()),
+                    "router_cells": router_count,
+                    "edges": int(rt_ix.size),
+                    "mean_active_degree": rt_degree,
+                    "zero_active_degree": rt_zero,
+                    "materialization_ms": rt_ms,
+                    "summary_checks": rt_checks,
+                    "copies_used_mean": 1.0,
+                }
+            )
+
+            # Native-tier active C1 baseline quantifies the virtual-tier gain.
+            native_graph = None
+            native_grouped = None
+            native_mat_ms = 0.0
+            native_checks = 0
+            if native_level.name != level.name:
+                nq, noff, ncounts = rq.grouped_ids(
+                    native_level.cells, mask, len(native_level.portals)
+                )
+                nactive = ncounts > 0
+                nt = time.perf_counter()
+                nip, nix, native_checks = filter_active_csr(
+                    native_level.copies[(args.bottom_b, 0)][0][0],
+                    native_level.copies[(args.bottom_b, 0)][0][1],
+                    nactive,
+                )
+                native_mat_ms = 1000.0 * (time.perf_counter() - nt)
+                native_grouped = (nq, noff, ncounts, nactive)
+                native_graph = (nip, nix)
+                ndeg, nzero = graph_degree(nip, nactive)
+                materialization_rows.append(
+                    {
+                        "selectivity": s,
+                        "mask_seed": mi,
+                        "level_name": native_level.name,
+                        "method": "native_active_c1",
+                        "active_cells": int(nactive.sum()),
+                        "edges": int(nix.size),
+                        "mean_active_degree": ndeg,
+                        "zero_active_degree": nzero,
+                        "materialization_ms": native_mat_ms,
+                        "summary_checks": native_checks,
+                        "copies_used_mean": 1.0,
+                    }
+                )
+
+            counts_upper = np.bincount(
+                witness.parent,
+                weights=counts,
+                minlength=len(witness.upper_portals),
+            ).astype(np.int32)
+            upper_active = counts_upper > 0
+            tup = time.perf_counter()
+            uip, uix, upper_checks = filter_active_csr(
+                upper_copy[0], upper_copy[1], upper_active
+            )
+            upper_mat_ms = 1000.0 * (time.perf_counter() - tup)
+
+            point_ids = np.flatnonzero(mask).astype(np.int32)
+            block = adj[point_ids]
+            safe = np.maximum(block, 0)
+            point_deg = np.sum((block >= 0) & mask[safe], axis=1)
+            for method, (ip, ix, _, _, used, mean_deg) in graph_variants.items():
+                _, zero_deg = graph_degree(ip, active)
+                structural_rows.append(
+                    {
+                        "selectivity": s,
+                        "mask_seed": mi,
+                        "level_name": level.name,
+                        "method": method,
+                        "valid_count": valid_count,
+                        "active_cells": int(active.sum()),
+                        "point_valid_degree": float(point_deg.mean()),
+                        "point_zero_degree": float(np.mean(point_deg == 0)),
+                        "active_degree": mean_deg,
+                        "active_zero_degree": zero_deg,
+                        "copies_used_mean": used,
+                    }
+                )
+
+            for qid in qids_by_mask[mi]:
+                q = xq[qid]
+                truth = rq.topk_ids(xb, q, qualified, 10)
+                tpre = time.perf_counter()
+                _ = rq.topk_ids(xb, q, qualified, 10)
+                rows.append(
+                    {
+                        "method": "prefilter_exact",
+                        "selectivity": s,
+                        "mask_seed": mi,
+                        "query": qid,
+                        "parameter": 0,
+                        "level_name": level.name,
+                        "recall": 1.0,
+                        "distance_computations": valid_count,
+                        "portal_computations": 0,
+                        "payload_computations": valid_count,
+                        "adjacency_reads": 0,
+                        "visited_cells": 0,
+                        "summary_checks_query": 0,
+                        "child_reads_query": 0,
+                        "latency_ms": 1000.0 * (time.perf_counter() - tpre),
+                        "valid_count": valid_count,
+                        "materialization_ms": 0.0,
+                        "materialization_summary_checks": 0,
+                        "copies_used_mean": 0.0,
+                        "active_degree_mean": 0.0,
+                        "postfilter_candidate_pool_lower_bound": 0,
+                    }
+                )
+                for pool in post_pools:
+                    cand = post_candidates[qid, :pool]
+                    found = cand[mask[cand]][:10].astype(np.int32)
+                    rows.append(
+                        {
+                            "method": "postfilter_hnsw",
+                            "selectivity": s,
+                            "mask_seed": mi,
+                            "query": qid,
+                            "parameter": pool,
+                            "level_name": level.name,
+                            "recall": rq.recall_at_10(found, truth),
+                            "distance_computations": np.nan,
+                            "portal_computations": np.nan,
+                            "payload_computations": int(found.size),
+                            "adjacency_reads": np.nan,
+                            "visited_cells": np.nan,
+                            "summary_checks_query": 0,
+                            "child_reads_query": 0,
+                            "latency_ms": post_ms_per_query,
+                            "valid_count": valid_count,
+                            "materialization_ms": 0.0,
+                            "materialization_summary_checks": 0,
+                            "copies_used_mean": 0.0,
+                            "active_degree_mean": 0.0,
+                            "postfilter_candidate_pool_lower_bound": pool,
+                        }
+                    )
+
+                pred_seeds = rq.predicate_seed_cells(
+                    mask,
+                    levels_raw,
+                    level.cells,
+                    args.seed + 91_001 + qid,
+                    limit=args.seed_count,
+                )
+                entry_cell = int(level.cells[entry_ids[qid]])
+                active_seeds = pred_seeds
+                if active[entry_cell]:
+                    active_seeds = np.unique(
+                        np.concatenate((active_seeds, np.asarray([entry_cell], dtype=np.int32)))
+                    )
+                router_seeds = np.unique(
+                    np.concatenate((pred_seeds, np.asarray([entry_cell], dtype=np.int32)))
+                )
+
+                for ef in efs:
+                    for method, (ip, ix, mat_ms, checks, used, mean_deg) in graph_variants.items():
+                        seeds = router_seeds if method == "router1hop" else active_seeds
+                        sr = search_cells(xb, q, level.portals, ip, ix, seeds, ef)
+                        ans, payload_n, payload_ms = payload_answer(
+                            xb, q, qualified, qoff, sr.selected_cells
+                        )
+                        append_result(
+                            rows,
+                            method,
+                            s,
+                            mi,
+                            qid,
+                            ef,
+                            level.name,
+                            sr,
+                            ans,
+                            truth,
+                            payload_n,
+                            payload_ms,
+                            valid_count,
+                            mat_ms,
+                            checks,
+                            copies_used_mean=used,
+                            active_degree_mean=mean_deg,
+                        )
+
+                    base = graph_variants["active_c1"]
+                    lazy = lazy_degree_refine_search(
+                        xb,
+                        q,
+                        level.portals,
+                        base[0],
+                        base[1],
+                        level.full_indptr,
+                        level.full_indices,
+                        counts,
+                        active_seeds,
+                        ef,
+                        args.degree_target,
+                        args.lazy_max_extra,
+                        args.capacity_lambda,
+                    )
+                    ans, payload_n, payload_ms = payload_answer(
+                        xb, q, qualified, qoff, lazy.selected_cells
+                    )
+                    append_result(
+                        rows,
+                        "lazy_qcap",
+                        s,
+                        mi,
+                        qid,
+                        ef,
+                        level.name,
+                        lazy,
+                        ans,
+                        truth,
+                        payload_n,
+                        payload_ms,
+                        valid_count,
+                        base[2],
+                        base[3],
+                        copies_used_mean=1.0,
+                        active_degree_mean=base[5],
+                    )
