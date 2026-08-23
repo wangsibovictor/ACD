@@ -1,4 +1,4 @@
-name: RankQ summary-aware SIFT1M experiment
+name: RankQ v2 theory-guided SIFT1M experiment
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: rankq-summary-sift1m
+  group: rankq-v2-sift1m
   cancel-in-progress: true
 
 jobs:
@@ -24,27 +24,34 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/rankq-v2-copies-20260823
 
       - name: Mark run started
         run: |
-          mkdir -p experiment_outputs/rankq_summary
-          printf 'status=started\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
+          mkdir -p experiment_outputs/rankq_v2
+          printf 'status=started\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v2/STATUS.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add experiment_outputs/rankq_summary/STATUS.txt
-          git commit -m "Mark RankQ benchmark started [skip ci]"
-          git push
+          git add experiment_outputs/rankq_v2/STATUS.txt
+          git commit -m "Mark RankQ v2 benchmark started [skip ci]" || true
+          git push origin HEAD:agent/rankq-v2-copies-20260823
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Assemble and compile experiment
+        run: |
+          cat experiments/rankq_v2_progressive.py.part* > experiments/rankq_v2_progressive.py
+          python -m py_compile experiments/sift1m_1pct_experiment.py
+          python -m py_compile experiments/rankq_v2_progressive.py
+          wc -l experiments/rankq_v2_progressive.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            numpy==1.26.4 pandas==2.2.2 h5py==3.11.0 faiss-cpu==1.8.0.post1
-          python -m py_compile experiments/sift1m_1pct_experiment.py
+          python -m pip install numpy==1.26.4 pandas==2.2.2 h5py==3.11.0 faiss-cpu==1.8.0.post1
 
       - name: Download SIFT1M
         run: |
@@ -53,47 +60,46 @@ jobs:
             https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
             -o data/sift-128-euclidean.hdf5
 
-      - name: Run summary-aware suite
+      - name: Run RankQ v2 suite
         run: |
-          mkdir -p results
-          /usr/bin/time -v python experiments/sift1m_1pct_experiment.py \
+          rm -rf results/rankq_v2
+          mkdir -p results/rankq_v2
+          /usr/bin/time -v python experiments/rankq_v2_progressive.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/rankq_summary \
+            --out results/rankq_v2 \
             --queries 30 --threads 4 --M 8 --ef-construction 80 \
-            --selectivity 0.01 \
+            --selectivities 0.001,0.002,0.003,0.005,0.007,0.01,0.02 \
             --efs 32,64,128,256 \
-            2>&1 | tee results/rankq_summary_run.log
+            --bottom-b 8 --max-copies 8 --adaptive-max-copies 4 \
+            --degree-target 8 --lazy-max-extra 8 --capacity-lambda 0.5 \
+            2>&1 | tee results/rankq_v2/full_run.log
 
       - name: Commit compact results
         if: success()
         run: |
-          cp results/rankq_summary/summary.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/structural.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/materialization.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/index_levels.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/hnsw_levels.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/selectivity_estimator.csv experiment_outputs/rankq_summary/
-          cp results/rankq_summary/metadata.json experiment_outputs/rankq_summary/
-          printf 'status=success\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
-          git add experiment_outputs/rankq_summary
-          git commit -m "Add RankQ summary-aware SIFT1M results [skip ci]"
-          git push
+          cp -f results/rankq_v2/*.csv experiment_outputs/rankq_v2/ || true
+          cp -f results/rankq_v2/*.json experiment_outputs/rankq_v2/ || true
+          cp -f results/rankq_v2/full_run.log experiment_outputs/rankq_v2/ || true
+          printf 'status=success\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v2/STATUS.txt
+          git add experiments/rankq_v2_progressive.py experiment_outputs/rankq_v2
+          git commit -m "Add RankQ v2 SIFT1M results [skip ci]" || true
+          git push origin HEAD:agent/rankq-v2-copies-20260823
 
       - name: Commit failure status
         if: failure()
         run: |
-          printf 'status=failure\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
-          if [ -f results/rankq_summary_run.log ]; then tail -n 200 results/rankq_summary_run.log > experiment_outputs/rankq_summary/FAILURE_LOG.txt; fi
-          git add experiment_outputs/rankq_summary
-          git commit -m "Record RankQ benchmark failure [skip ci]" || true
-          git push || true
+          printf 'status=failure\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v2/STATUS.txt
+          if [ -f results/rankq_v2/full_run.log ]; then tail -n 300 results/rankq_v2/full_run.log > experiment_outputs/rankq_v2/FAILURE_LOG.txt; fi
+          git add experiment_outputs/rankq_v2
+          git commit -m "Record RankQ v2 failure [skip ci]" || true
+          git push origin HEAD:agent/rankq-v2-copies-20260823 || true
 
       - name: Upload full results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rankq-summary-sift1m-results
-          path: results/
+          name: rankq-v2-sift1m-results
+          path: results/rankq_v2/
           if-no-files-found: warn
           retention-days: 7
           compression-level: 6
