@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import argparse
+import heapq
+import json
+import math
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+
+import faiss
+import h5py
+import numpy as np
+import pandas as pd
+
+import sift1m_1pct_experiment as rq
+
+
+@dataclass
+class CellSearchResult:
+    selected_cells: np.ndarray
+    portal_computations: int
+    adjacency_reads: int
+    visited_cells: int
+    summary_checks: int
+    latency_ms: float
+
+
+@dataclass
+class LevelIndex:
+    name: str
+    portals: np.ndarray
+    cells: np.ndarray
+    full_indptr: np.ndarray
+    full_indices: np.ndarray
+    copies: Dict[Tuple[int, int], List[Tuple[np.ndarray, np.ndarray]]]
+    cell_stats: Dict[str, float]
+    assignment_seconds: float
+    contract_seconds: float
+
+
+@dataclass
+class WitnessIndex:
+    upper_portals: np.ndarray
+    parent: np.ndarray
+    child_indptr: np.ndarray
+    child_indices: np.ndarray
+    upper_indptr: np.ndarray
+    upper_indices: np.ndarray
+    edge_keys: np.ndarray
+    witness_indptr: np.ndarray
+    witness_children: np.ndarray
+
+
+def log(msg: str) -> None:
+    rq.log(msg)
+
+
+def csr_union(graphs: Sequence[Tuple[np.ndarray, np.ndarray]], n: int) -> Tuple[np.ndarray, np.ndarray]:
+    if not graphs:
+        return np.zeros(n + 1, dtype=np.int64), np.empty(0, dtype=np.int32)
+    keys_parts: List[np.ndarray] = []
+    for indptr, indices in graphs:
+        src = np.repeat(np.arange(n, dtype=np.int64), np.diff(indptr))
+        if indices.size:
+            keys_parts.append(src * n + indices.astype(np.int64, copy=False))
+    if not keys_parts:
+        return np.zeros(n + 1, dtype=np.int64), np.empty(0, dtype=np.int32)
+    return rq.keys_to_csr(np.concatenate(keys_parts), n)
+
+
+def filter_active_csr(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    active: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    n = len(active)
+    src_parts: List[np.ndarray] = []
+    dst_parts: List[np.ndarray] = []
+    checks = 0
+    for u in np.flatnonzero(active).tolist():
+        a, z = int(indptr[u]), int(indptr[u + 1])
+        nb = indices[a:z]
+        checks += int(nb.size)
+        keep = nb[active[nb]]
+        if keep.size:
+            src_parts.append(np.full(keep.size, u, dtype=np.int32))
+            dst_parts.append(keep.astype(np.int32, copy=False))
+    if not src_parts:
+        return np.zeros(n + 1, dtype=np.int64), np.empty(0, dtype=np.int32), checks
+    src = np.concatenate(src_parts)
+    dst = np.concatenate(dst_parts)
+    keys = src.astype(np.int64) * n + dst.astype(np.int64)
+    ip, ix = rq.keys_to_csr(keys, n)
+    return ip, ix, checks
+
+
+def certified_router_csr(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    active: np.ndarray,
+    min_active_fanout: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, int, int]:
+    """One-hop router recovery: active->active/router and router->active only."""
+    n = len(active)
+    active_fanout = np.zeros(n, dtype=np.int32)
+    checks = 0
+    for u in range(n):
+        a, z = int(indptr[u]), int(indptr[u + 1])
+        nb = indices[a:z]
+        checks += int(nb.size)
+        active_fanout[u] = int(np.count_nonzero(active[nb]))
+    router = (~active) & (active_fanout >= min_active_fanout)
+    src_parts: List[np.ndarray] = []
+    dst_parts: List[np.ndarray] = []
+    for u in range(n):
+        a, z = int(indptr[u]), int(indptr[u + 1])
+        nb = indices[a:z]
+        if active[u]:
+            keep = nb[active[nb] | router[nb]]
+        elif router[u]:
+            keep = nb[active[nb]]
+        else:
+            continue
+        if keep.size:
+            src_parts.append(np.full(keep.size, u, dtype=np.int32))
+            dst_parts.append(keep.astype(np.int32, copy=False))
+    if not src_parts:
+        return np.zeros(n + 1, dtype=np.int64), np.empty(0, dtype=np.int32), checks, int(router.sum())
+    src = np.concatenate(src_parts)
+    dst = np.concatenate(dst_parts)
+    keys = src.astype(np.int64) * n + dst.astype(np.int64)
+    ip, ix = rq.keys_to_csr(keys, n)
+    return ip, ix, checks, int(router.sum())
+
+
+def search_cells(
+    xb: np.ndarray,
+    q: np.ndarray,
+    portals: np.ndarray,
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    seeds: np.ndarray,
+    ef: int,
+) -> CellSearchResult:
+    t0 = time.perf_counter()
+    n = len(portals)
+    ef = min(max(1, int(ef)), n)
+    seeds = np.unique(seeds[(seeds >= 0) & (seeds < n)]).astype(np.int32)
+    if seeds.size == 0:
+        return CellSearchResult(np.empty(0, dtype=np.int32), 0, 0, 0, 0, 0.0)
+    visited = np.zeros(n, dtype=np.uint8)
+    ds0 = rq.l2_batch(xb[portals[seeds]], q)
+    candidates: List[Tuple[float, int]] = []
+    top: List[Tuple[float, int]] = []
+    for dv, s0 in zip(ds0.tolist(), seeds.tolist()):
+        visited[s0] = 1
+        heapq.heappush(candidates, (float(dv), int(s0)))
+        heapq.heappush(top, (-float(dv), int(s0)))
+        if len(top) > ef:
+            heapq.heappop(top)
+    portal_comps = int(seeds.size)
+    reads = 0
+    while candidates:
+        du, u = heapq.heappop(candidates)
+        if len(top) >= ef and du > -top[0][0]:
+            break
+        a, z = int(indptr[u]), int(indptr[u + 1])
+        nb = indices[a:z]
+        reads += int(nb.size)
+        if nb.size == 0:
+            continue
+        unseen = nb[visited[nb] == 0]
+        if unseen.size == 0:
+            continue
+        visited[unseen] = 1
+        ds = rq.l2_batch(xb[portals[unseen]], q)
+        portal_comps += int(unseen.size)
+        for dv, v0 in zip(ds.tolist(), unseen.tolist()):
+            v = int(v0)
+            if len(top) < ef or dv < -top[0][0]:
+                heapq.heappush(candidates, (float(dv), v))
+                heapq.heappush(top, (-float(dv), v))
+                if len(top) > ef:
+                    heapq.heappop(top)
+    selected = np.asarray([u for _, u in sorted([(-d, u) for d, u in top])], dtype=np.int32)
+    return CellSearchResult(
+        selected_cells=selected,
+        portal_computations=portal_comps,
+        adjacency_reads=reads,
+        visited_cells=int(np.count_nonzero(visited)),
+        summary_checks=0,
+        latency_ms=1000.0 * (time.perf_counter() - t0),
+    )
+
+
+def lazy_degree_refine_search(
+    xb: np.ndarray,
+    q: np.ndarray,
+    portals: np.ndarray,
+    base_indptr: np.ndarray,
+    base_indices: np.ndarray,
+    full_indptr: np.ndarray,
+    full_indices: np.ndarray,
+    counts: np.ndarray,
+    seeds: np.ndarray,
+    ef: int,
+    degree_target: int,
+    max_extra: int,
+    capacity_lambda: float,
+) -> CellSearchResult:
+    """Active-first search; low-degree expansions lazily add query-nearest full-boundary exits."""
+    t0 = time.perf_counter()
+    active = counts > 0
+    n = len(portals)
+    ef = min(max(1, int(ef)), n)
+    seeds = np.unique(seeds[(seeds >= 0) & (seeds < n) & active[seeds]]).astype(np.int32)
+    if seeds.size == 0:
+        return CellSearchResult(np.empty(0, dtype=np.int32), 0, 0, 0, 0, 0.0)
+    visited = np.zeros(n, dtype=np.uint8)
+    ds0 = rq.l2_batch(xb[portals[seeds]], q)
+    candidates: List[Tuple[float, int]] = []
+    top: List[Tuple[float, int]] = []
+    for dv, s0 in zip(ds0.tolist(), seeds.tolist()):
+        visited[s0] = 1
+        heapq.heappush(candidates, (float(dv), int(s0)))
+        heapq.heappush(top, (-float(dv), int(s0)))
+        if len(top) > ef:
+            heapq.heappop(top)
+    portal_comps = int(seeds.size)
+    reads = 0
+    checks = 0
+    while candidates:
+        du, u = heapq.heappop(candidates)
+        if len(top) >= ef and du > -top[0][0]:
+            break
+        a, z = int(base_indptr[u]), int(base_indptr[u + 1])
+        base_nb = base_indices[a:z]
+        reads += int(base_nb.size)
