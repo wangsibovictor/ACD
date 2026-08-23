@@ -1,0 +1,34 @@
+{
+  "dataset": "data/sift-128-euclidean.hdf5",
+  "n": 1000000,
+  "d": 128,
+  "queries": 30,
+  "M": 8,
+  "ef_construction": 80,
+  "threads": 4,
+  "selectivities": [
+    0.02,
+    0.01,
+    0.007,
+    0.005,
+    0.003,
+    0.002,
+    0.001
+  ],
+  "efs": [
+    32,
+    64,
+    128,
+    256
+  ],
+  "mask_seeds": 3,
+  "bottom_b": 8,
+  "geo_core": 4,
+  "cap_b": 4,
+  "uni_b": 4,
+  "build_seconds": 63.39555949799998,
+  "base_actual_edges": 12904563,
+  "hnsw_neighbor_slots": 17141608,
+  "parent23_seconds": 0.20761990900001592,
+  "parent34_seconds": 0.015834467999980006
+}
