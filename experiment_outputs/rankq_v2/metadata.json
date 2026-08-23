@@ -1,0 +1,35 @@
+{
+  "dataset": "data/sift-128-euclidean.hdf5",
+  "n": 1000000,
+  "d": 128,
+  "queries": 30,
+  "selectivities": [
+    0.001,
+    0.002,
+    0.003,
+    0.005,
+    0.007,
+    0.01,
+    0.02
+  ],
+  "efs": [
+    32,
+    64,
+    128,
+    256
+  ],
+  "M": 8,
+  "ef_construction": 80,
+  "bottom_b": 8,
+  "max_copies": 8,
+  "adaptive_max_copies": 4,
+  "degree_target": 8,
+  "lazy_max_extra": 8,
+  "capacity_lambda": 0.5,
+  "virtual_rate_hi": 0.008,
+  "virtual_rate_lo": 0.004,
+  "build_seconds": 67.877075829,
+  "base_actual_edges": 12907269,
+  "hnsw_neighbor_slots": 17141608,
+  "postfilter_ms_per_query": 30.73137680000002
+}

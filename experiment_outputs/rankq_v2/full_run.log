@@ -1,0 +1,86 @@
+[15:17:13] loaded dataset xb=(1000000, 128), queries=30, s=[0.001, 0.002, 0.003, 0.005, 0.007, 0.01, 0.02]
+[15:18:21] base HNSW built: n=1,000,000, M=8, efC=80, seconds=67.88
+[15:18:21] layer-0 extracted: slots=16,000,000, actual edges=12,907,269, width=16
+[15:18:21] building level L2: portals=15,653, rate=0.015653
+[15:18:42] L-cell assignment: portals=15,653, seconds=19.98, mean=63.89, median=48.0, p99=254.0
+[15:18:43] full quotient: cells=15,653, directed edges=4,705,732, mean degree=300.63, seconds=1.71
+[15:18:44] uniform bottom-8: edges=246,730, degree=15.76
+[15:18:44] uniform bottom-8: edges=246,836, degree=15.77
+[15:18:44] uniform bottom-8: edges=246,960, degree=15.78
+[15:18:44] uniform bottom-8: edges=246,920, degree=15.77
+[15:18:45] uniform bottom-8: edges=246,844, degree=15.77
+[15:18:45] uniform bottom-8: edges=246,730, degree=15.76
+[15:18:45] uniform bottom-8: edges=246,798, degree=15.77
+[15:18:45] uniform bottom-8: edges=246,828, degree=15.77
+[15:18:46] building level V08: portals=8,000, rate=0.008000
+[15:19:03] L-cell assignment: portals=8,000, seconds=17.49, mean=125.00, median=94.0, p99=514.0
+[15:19:05] full quotient: cells=8,000, directed edges=2,837,580, mean degree=354.70, seconds=1.37
+[15:19:05] uniform bottom-8: edges=126,472, degree=15.81
+[15:19:05] uniform bottom-8: edges=126,504, degree=15.81
+[15:19:05] uniform bottom-8: edges=126,598, degree=15.82
+[15:19:05] uniform bottom-8: edges=126,474, degree=15.81
+[15:19:05] uniform bottom-8: edges=126,428, degree=15.80
+[15:19:05] uniform bottom-8: edges=126,488, degree=15.81
+[15:19:06] uniform bottom-8: edges=126,490, degree=15.81
+[15:19:06] uniform bottom-8: edges=126,510, degree=15.81
+[15:19:06] building level V04: portals=4,000, rate=0.004000
+[15:19:21] L-cell assignment: portals=4,000, seconds=15.28, mean=250.00, median=186.0, p99=1005.0
+[15:19:22] full quotient: cells=4,000, directed edges=1,504,744, mean degree=376.19, seconds=1.10
+[15:19:22] uniform bottom-8: edges=63,322, degree=15.83
+[15:19:22] uniform bottom-8: edges=63,316, degree=15.83
+[15:19:22] uniform bottom-8: edges=63,256, degree=15.81
+[15:19:22] uniform bottom-8: edges=63,354, degree=15.84
+[15:19:22] uniform bottom-8: edges=63,300, degree=15.82
+[15:19:23] uniform bottom-8: edges=63,220, degree=15.80
+[15:19:23] uniform bottom-8: edges=63,250, degree=15.81
+[15:19:23] uniform bottom-8: edges=63,338, degree=15.83
+[15:19:23] building level L3: portals=1,964, rate=0.001964
+[15:19:35] L-cell assignment: portals=1,964, seconds=12.33, mean=509.16, median=372.0, p99=2176.4
+[15:19:36] full quotient: cells=1,964, directed edges=661,996, mean degree=337.07, seconds=0.89
+[15:19:36] uniform bottom-8: edges=31,076, degree=15.82
+[15:19:36] uniform bottom-8: edges=31,012, degree=15.79
+[15:19:36] uniform bottom-8: edges=31,048, degree=15.81
+[15:19:36] uniform bottom-8: edges=31,042, degree=15.81
+[15:19:36] uniform bottom-8: edges=31,070, degree=15.82
+[15:19:36] uniform bottom-8: edges=31,050, degree=15.81
+[15:19:36] uniform bottom-8: edges=30,996, degree=15.78
+[15:19:36] uniform bottom-8: edges=31,042, degree=15.81
+[15:19:36] parent assignment: children=15,653, parents=1,964, seconds=0.20
+[15:19:37] uniform bottom-8: edges=31,078, degree=15.82
+[15:19:37] parent assignment: children=8,000, parents=1,964, seconds=0.10
+[15:19:38] uniform bottom-8: edges=31,014, degree=15.79
+[15:19:38] parent assignment: children=4,000, parents=1,964, seconds=0.05
+[15:19:38] uniform bottom-8: edges=31,028, degree=15.80
+[15:19:38] parent assignment: children=1,964, parents=210, seconds=0.02
+[15:19:38] uniform bottom-8: edges=3,236, degree=15.41
+[15:19:39] s=0.001: theory-matched=L3 rate=0.001964; native=L3 rate=0.001964
+[15:19:44] s=0.002: theory-matched=L3 rate=0.001964; native=L3 rate=0.001964
+[15:19:48] s=0.003: theory-matched=V04 rate=0.004000; native=L3 rate=0.001964
+[15:19:53] s=0.005: theory-matched=V04 rate=0.004000; native=L3 rate=0.001964
+[15:19:59] s=0.007: theory-matched=V08 rate=0.008000; native=L2 rate=0.015653
+[15:20:05] s=0.01: theory-matched=V08 rate=0.008000; native=L2 rate=0.015653
+[15:20:12] s=0.02: theory-matched=L2 rate=0.015653; native=L2 rate=0.015653
+[15:20:18] complete: rows=8,670, summary=289, out=results/rankq_v2
+	Command being timed: "python experiments/rankq_v2_progressive.py --dataset data/sift-128-euclidean.hdf5 --out results/rankq_v2 --queries 30 --threads 4 --M 8 --ef-construction 80 --selectivities 0.001,0.002,0.003,0.005,0.007,0.01,0.02 --efs 32,64,128,256 --bottom-b 8 --max-copies 8 --adaptive-max-copies 4 --degree-target 8 --lazy-max-extra 8 --capacity-lambda 0.5"
+	User time (seconds): 585.13
+	System time (seconds): 0.78
+	Percent of CPU this job got: 315%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 3:05.52
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1624556
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 78814
+	Voluntary context switches: 133
+	Involuntary context switches: 79943
+	Swaps: 0
+	File system inputs: 1424
+	File system outputs: 2592
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
