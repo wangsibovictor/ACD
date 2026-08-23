@@ -1,9 +1,9 @@
-name: SIFT1M quotient 1-percent experiment
+name: RankQ summary-aware SIFT1M experiment
 
 on:
   push:
     branches:
-      - agent/sift1m-quotient-run-20260807
+      - agent/rankq-summary-exp-20260823
   workflow_dispatch:
 
 permissions:
@@ -40,16 +40,16 @@ jobs:
             -o data/sift-128-euclidean.hdf5
           ls -lh data/sift-128-euclidean.hdf5
 
-      - name: Run one-percent sweep
+      - name: Run summary-aware screening suite
         run: |
           mkdir -p results
           /usr/bin/time -v python experiments/sift1m_1pct_experiment.py \
             --dataset data/sift-128-euclidean.hdf5 \
-            --out results/sift1m_1pct \
-            --queries 60 --threads 4 --M 8 --ef-construction 80 \
+            --out results/rankq_summary \
+            --queries 30 --threads 4 --M 8 --ef-construction 80 \
             --selectivity 0.01 \
-            --efs 32,64,128,256,512,1024,2048 \
-            2>&1 | tee results/one_percent_run.log
+            --efs 32,64,128,256 \
+            2>&1 | tee results/rankq_summary_run.log
 
       - name: Inspect outputs
         if: always()
@@ -62,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sift1m-quotient-1pct-results
+          name: rankq-summary-sift1m-results
           path: results/
           if-no-files-found: warn
           retention-days: 7
