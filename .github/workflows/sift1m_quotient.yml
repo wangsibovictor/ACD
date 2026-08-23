@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: rankq-summary-sift1m
+  cancel-in-progress: true
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -20,6 +24,16 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Mark run started
+        run: |
+          mkdir -p experiment_outputs/rankq_summary
+          printf 'status=started\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiment_outputs/rankq_summary/STATUS.txt
+          git commit -m "Mark RankQ benchmark started [skip ci]"
+          git push
 
       - uses: actions/setup-python@v5
         with:
@@ -53,7 +67,6 @@ jobs:
       - name: Commit compact results
         if: success()
         run: |
-          mkdir -p experiment_outputs/rankq_summary
           cp results/rankq_summary/summary.csv experiment_outputs/rankq_summary/
           cp results/rankq_summary/structural.csv experiment_outputs/rankq_summary/
           cp results/rankq_summary/materialization.csv experiment_outputs/rankq_summary/
@@ -61,11 +74,19 @@ jobs:
           cp results/rankq_summary/hnsw_levels.csv experiment_outputs/rankq_summary/
           cp results/rankq_summary/selectivity_estimator.csv experiment_outputs/rankq_summary/
           cp results/rankq_summary/metadata.json experiment_outputs/rankq_summary/
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'status=success\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
           git add experiment_outputs/rankq_summary
           git commit -m "Add RankQ summary-aware SIFT1M results [skip ci]"
           git push
+
+      - name: Commit failure status
+        if: failure()
+        run: |
+          printf 'status=failure\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_summary/STATUS.txt
+          if [ -f results/rankq_summary_run.log ]; then tail -n 200 results/rankq_summary_run.log > experiment_outputs/rankq_summary/FAILURE_LOG.txt; fi
+          git add experiment_outputs/rankq_summary
+          git commit -m "Record RankQ benchmark failure [skip ci]" || true
+          git push || true
 
       - name: Upload full results
         if: always()
