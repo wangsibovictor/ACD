@@ -1,0 +1,3 @@
+        if "distance_cache" not in locals():
+            distance_cache = np.full(n, np.nan, dtype=np.float32)
+            distance_cache[seeds] = ds0.astype(np.float32, copy=False)
