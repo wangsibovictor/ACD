@@ -1,0 +1,104 @@
+
+    qdf = pd.DataFrame(rows)
+    qdf.to_csv(out / "query_results.csv", index=False)
+    structural = pd.DataFrame(structural_rows)
+    structural.to_csv(out / "structural.csv", index=False)
+
+    summary = (
+        qdf.groupby(["method", "selectivity", "parameter", "level_name"], as_index=False)
+        .agg(
+            recall=("recall", "mean"),
+            recall_p10=("recall", lambda x: float(np.quantile(x, 0.10))),
+            distance_computations=("distance_computations", "mean"),
+            portal_computations=("portal_computations", "mean"),
+            payload_computations=("payload_computations", "mean"),
+            adjacency_reads=("adjacency_reads", "mean"),
+            visited_cells=("visited_cells", "mean"),
+            summary_checks_query=("summary_checks_query", "mean"),
+            copy_lists_read=("copy_lists_read", "mean"),
+            expanded_active_cells=("expanded_active_cells", "mean"),
+            avg_copies_per_expansion=("avg_copies_per_expansion", "mean"),
+            active_edges_exposed=("active_edges_exposed", "mean"),
+            improving_edges=("improving_edges", "mean"),
+            progress_fraction=("progress_fraction", "mean"),
+            geo_fallbacks=("geo_fallbacks", "mean"),
+            router_fallbacks=("router_fallbacks", "mean"),
+            latency_ms=("latency_ms", "mean"),
+            valid_count=("valid_count", "mean"),
+            theory_copies=("theory_copies", "mean"),
+        )
+        .sort_values(["selectivity", "method", "parameter"])
+    )
+    summary.to_csv(out / "summary.csv", index=False)
+
+    theory_rows = []
+    for s in selectivities:
+        level = choose_native_level(native_levels, s, n)
+        B = n / len(level.portals)
+        tau = s * B
+        rho = 1.0 - math.exp(-tau)
+        c = theory_copy_bound(s, B, args.bottom_b, args.path_hops, args.path_delta)
+        theory_rows.append(
+            {
+                "selectivity": s,
+                "level_name": level.name,
+                "cell_size_B": B,
+                "tau_sB": tau,
+                "active_probability_approx": rho,
+                "path_hops": args.path_hops,
+                "path_delta": args.path_delta,
+                "log_H_over_delta": math.log(args.path_hops / args.path_delta),
+                "theory_copy_bound": c,
+                "degree_target4": 4,
+                "degree_target8": 8,
+            }
+        )
+    pd.DataFrame(theory_rows).to_csv(out / "theory_guidance.csv", index=False)
+
+    metadata = {
+        "dataset": args.dataset,
+        "n": n,
+        "d": d,
+        "queries": len(xq),
+        "selectivities": selectivities,
+        "efs": efs,
+        "M": args.M,
+        "ef_construction": args.ef_construction,
+        "bottom_b": args.bottom_b,
+        "max_copies": args.max_copies,
+        "controller_max_copies": args.controller_max_copies,
+        "geo_core": args.geo_core,
+        "progress_eps": args.progress_eps,
+        "router_budget": args.router_budget,
+        "build_seconds": build_seconds,
+        "base_actual_edges": base_actual_edges,
+        "hnsw_neighbor_slots": hnsw_neighbor_slots,
+        "postfilter_ms_per_query": post_ms_per_query,
+    }
+    (out / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    log(f"complete: query rows={len(qdf):,}, summary rows={len(summary):,}, out={out}")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--dataset", default="data/sift-128-euclidean.hdf5")
+    p.add_argument("--out", default="results/rankq_v3")
+    p.add_argument("--queries", type=int, default=30)
+    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--M", type=int, default=8)
+    p.add_argument("--ef-construction", type=int, default=80)
+    p.add_argument("--seed", type=int, default=20260823)
+    p.add_argument("--mask-seeds", type=int, default=3)
+    p.add_argument("--selectivities", default="0.001,0.002,0.003,0.005,0.007,0.01,0.02")
+    p.add_argument("--efs", default="32,64,128,256")
+    p.add_argument("--postfilter-pools", default="500,1000,2000,4000,8000,16000")
+    p.add_argument("--bottom-b", type=int, default=8)
+    p.add_argument("--max-copies", type=int, default=4)
+    p.add_argument("--controller-max-copies", type=int, default=4)
+    p.add_argument("--geo-core", type=int, default=8)
+    p.add_argument("--progress-eps", type=float, default=0.01)
+    p.add_argument("--router-budget", type=int, default=2)
+    p.add_argument("--seed-count", type=int, default=4)
+    p.add_argument("--path-hops", type=int, default=20)
+    p.add_argument("--path-delta", type=float, default=0.01)
+    run(p.parse_args())
