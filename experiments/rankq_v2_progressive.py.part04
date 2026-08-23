@@ -1,0 +1,221 @@
+
+                    if native_graph is not None and native_grouped is not None:
+                        nq, noff, ncounts, nactive = native_grouped
+                        nseed = rq.predicate_seed_cells(
+                            mask,
+                            levels_raw,
+                            native_level.cells,
+                            args.seed + 193_001 + qid,
+                            limit=args.seed_count,
+                        )
+                        nentry = int(native_level.cells[entry_ids[qid]])
+                        if nactive[nentry]:
+                            nseed = np.unique(
+                                np.concatenate((nseed, np.asarray([nentry], dtype=np.int32)))
+                            )
+                        nsr = search_cells(
+                            xb,
+                            q,
+                            native_level.portals,
+                            native_graph[0],
+                            native_graph[1],
+                            nseed,
+                            ef,
+                        )
+                        nans, npayload, npayload_ms = payload_answer(
+                            xb, q, nq, noff, nsr.selected_cells
+                        )
+                        ndeg, _ = graph_degree(native_graph[0], nactive)
+                        append_result(
+                            rows,
+                            "native_active_c1",
+                            s,
+                            mi,
+                            qid,
+                            ef,
+                            native_level.name,
+                            nsr,
+                            nans,
+                            truth,
+                            npayload,
+                            npayload_ms,
+                            valid_count,
+                            native_mat_ms,
+                            native_checks,
+                            copies_used_mean=1.0,
+                            active_degree_mean=ndeg,
+                        )
+
+                    upper_seed = np.unique(witness.parent[active_seeds]).astype(np.int32)
+                    upper_entry = int(witness.parent[entry_cell])
+                    if upper_active[upper_entry]:
+                        upper_seed = np.unique(
+                            np.concatenate((upper_seed, np.asarray([upper_entry], dtype=np.int32)))
+                        )
+                    upper_ef = min(len(witness.upper_portals), max(8, min(args.upper_ef, ef // 4)))
+                    upper_sr = search_cells(
+                        xb,
+                        q,
+                        witness.upper_portals,
+                        uip,
+                        uix,
+                        upper_seed,
+                        upper_ef,
+                    )
+                    witness_seeds, wcomp, wchecks, wreads, wms = witness_descent_seeds(
+                        xb,
+                        q,
+                        level,
+                        witness,
+                        (uip, uix),
+                        upper_sr.selected_cells,
+                        counts,
+                        seed_budget=max(args.seed_count * 2, ef // 4),
+                    )
+                    target_seed = np.unique(
+                        np.concatenate((active_seeds, witness_seeds))
+                    ).astype(np.int32)
+                    wsr = search_cells(
+                        xb,
+                        q,
+                        level.portals,
+                        base[0],
+                        base[1],
+                        target_seed,
+                        ef,
+                    )
+                    wans, wpayload, wpayload_ms = payload_answer(
+                        xb, q, qualified, qoff, wsr.selected_cells
+                    )
+                    append_result(
+                        rows,
+                        "witness_c1",
+                        s,
+                        mi,
+                        qid,
+                        ef,
+                        level.name,
+                        wsr,
+                        wans,
+                        truth,
+                        wpayload,
+                        wpayload_ms,
+                        valid_count,
+                        base[2] + upper_mat_ms,
+                        base[3] + upper_checks,
+                        extra_portal_computations=upper_sr.portal_computations + wcomp,
+                        extra_adjacency_reads=upper_sr.adjacency_reads,
+                        extra_summary_checks=wchecks,
+                        extra_child_reads=wreads,
+                        extra_latency_ms=upper_sr.latency_ms + wms,
+                        copies_used_mean=1.0,
+                        active_degree_mean=base[5],
+                    )
+
+    qdf = pd.DataFrame(rows)
+    qdf.to_csv(out / "query_results.csv", index=False)
+    mdf = pd.DataFrame(materialization_rows)
+    mdf.to_csv(out / "materialization.csv", index=False)
+    sdf = pd.DataFrame(structural_rows)
+    sdf.to_csv(out / "structural.csv", index=False)
+
+    summary = (
+        qdf.groupby(["method", "selectivity", "parameter", "level_name"], as_index=False)
+        .agg(
+            recall=("recall", "mean"),
+            recall_p10=("recall", lambda x: float(np.quantile(x, 0.10))),
+            distance_computations=("distance_computations", "mean"),
+            portal_computations=("portal_computations", "mean"),
+            payload_computations=("payload_computations", "mean"),
+            adjacency_reads=("adjacency_reads", "mean"),
+            visited_cells=("visited_cells", "mean"),
+            summary_checks_query=("summary_checks_query", "mean"),
+            child_reads_query=("child_reads_query", "mean"),
+            latency_ms=("latency_ms", "mean"),
+            valid_count=("valid_count", "mean"),
+            materialization_ms=("materialization_ms", "mean"),
+            materialization_summary_checks=("materialization_summary_checks", "mean"),
+            copies_used_mean=("copies_used_mean", "mean"),
+            active_degree_mean=("active_degree_mean", "mean"),
+        )
+        .sort_values(["selectivity", "method", "parameter"])
+    )
+    summary.to_csv(out / "summary.csv", index=False)
+
+    theory_rows: List[Dict[str, object]] = []
+    log_term = math.log(args.path_hops / args.path_delta)
+    for s in selectivities:
+        idx = choose_level_index(level_indices, s)
+        B = n / len(idx.portals)
+        tau = s * B
+        rho = 1.0 - math.exp(-tau)
+        copies_for_active = math.ceil(log_term / max(args.bottom_b * tau, 1e-12))
+        theory_rows.append(
+            {
+                "selectivity": s,
+                "level_name": idx.name,
+                "cell_size_B": B,
+                "occupancy_tau_sB": tau,
+                "active_probability_approx": rho,
+                "path_hops": args.path_hops,
+                "path_delta": args.path_delta,
+                "log_H_over_delta": log_term,
+                "copies_bound_active_exit": copies_for_active,
+                "configured_max_copies": args.max_copies,
+                "degree_target": args.degree_target,
+            }
+        )
+    pd.DataFrame(theory_rows).to_csv(out / "theory_guidance.csv", index=False)
+
+    metadata = {
+        "dataset": args.dataset,
+        "n": n,
+        "d": d,
+        "queries": len(xq),
+        "selectivities": selectivities,
+        "efs": efs,
+        "M": args.M,
+        "ef_construction": args.ef_construction,
+        "bottom_b": args.bottom_b,
+        "max_copies": args.max_copies,
+        "adaptive_max_copies": args.adaptive_max_copies,
+        "degree_target": args.degree_target,
+        "lazy_max_extra": args.lazy_max_extra,
+        "capacity_lambda": args.capacity_lambda,
+        "virtual_rate_hi": args.virtual_rate_hi,
+        "virtual_rate_lo": args.virtual_rate_lo,
+        "build_seconds": build_seconds,
+        "base_actual_edges": base_actual_edges,
+        "hnsw_neighbor_slots": hnsw_neighbor_slots,
+        "postfilter_ms_per_query": post_ms_per_query,
+    }
+    (out / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    log(f"complete: rows={len(qdf):,}, summary={len(summary):,}, out={out}")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--dataset", default="data/sift-128-euclidean.hdf5")
+    p.add_argument("--out", default="results/rankq_v2")
+    p.add_argument("--queries", type=int, default=30)
+    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--M", type=int, default=8)
+    p.add_argument("--ef-construction", type=int, default=80)
+    p.add_argument("--seed", type=int, default=20260823)
+    p.add_argument("--mask-seeds", type=int, default=3)
+    p.add_argument("--selectivities", default="0.001,0.002,0.003,0.005,0.007,0.01,0.02")
+    p.add_argument("--efs", default="32,64,128,256")
+    p.add_argument("--postfilter-pools", default="500,1000,2000,4000,8000,16000")
+    p.add_argument("--bottom-b", type=int, default=8)
+    p.add_argument("--max-copies", type=int, default=8)
+    p.add_argument("--adaptive-max-copies", type=int, default=4)
+    p.add_argument("--degree-target", type=int, default=8)
+    p.add_argument("--lazy-max-extra", type=int, default=8)
+    p.add_argument("--capacity-lambda", type=float, default=0.5)
+    p.add_argument("--seed-count", type=int, default=4)
+    p.add_argument("--upper-ef", type=int, default=32)
+    p.add_argument("--virtual-rate-hi", type=float, default=0.008)
+    p.add_argument("--virtual-rate-lo", type=float, default=0.004)
+    p.add_argument("--path-hops", type=int, default=20)
+    p.add_argument("--path-delta", type=float, default=0.01)
+    run(p.parse_args())
