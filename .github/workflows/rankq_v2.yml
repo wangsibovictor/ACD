@@ -1,0 +1,92 @@
+name: RankQ v2 theory-guided optimization
+
+on:
+  push:
+    branches:
+      - agent/rankq-v2-copies-20260823
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rankq-v2-copies-20260823
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Assemble and compile experiment
+        run: |
+          cat experiments/rankq_v2_progressive.py.part* > experiments/rankq_v2_progressive.py
+          python -m py_compile experiments/sift1m_1pct_experiment.py
+          python -m py_compile experiments/rankq_v2_progressive.py
+          wc -l experiments/rankq_v2_progressive.py
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==1.26.4 pandas==2.2.2 h5py==3.11.0 faiss-cpu==1.8.0.post1
+
+      - name: Download SIFT1M
+        run: |
+          mkdir -p data
+          curl -L --fail --retry 5 --retry-delay 5 \
+            https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
+            -o data/sift-128-euclidean.hdf5
+          ls -lh data/sift-128-euclidean.hdf5
+
+      - name: Run RankQ v2 suite
+        run: |
+          rm -rf results/rankq_v2
+          mkdir -p results/rankq_v2
+          /usr/bin/time -v python experiments/rankq_v2_progressive.py \
+            --dataset data/sift-128-euclidean.hdf5 \
+            --out results/rankq_v2 \
+            --queries 30 --threads 4 --M 8 --ef-construction 80 \
+            --selectivities 0.001,0.002,0.003,0.005,0.007,0.01,0.02 \
+            --efs 32,64,128,256 \
+            --bottom-b 8 --max-copies 8 --adaptive-max-copies 4 \
+            --degree-target 8 --lazy-max-extra 8 --capacity-lambda 0.5 \
+            2>&1 | tee results/rankq_v2/full_run.log
+
+      - name: Inspect results
+        if: always()
+        run: |
+          find results/rankq_v2 -maxdepth 2 -type f -printf '%p %s bytes\n' | sort || true
+          free -h
+
+      - name: Commit results to experiment branch
+        if: success()
+        run: |
+          mkdir -p experiment_outputs/rankq_v2
+          cp -f results/rankq_v2/*.csv experiment_outputs/rankq_v2/ || true
+          cp -f results/rankq_v2/*.json experiment_outputs/rankq_v2/ || true
+          cp -f results/rankq_v2/full_run.log experiment_outputs/rankq_v2/ || true
+          printf 'status=success\ncommit=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v2/STATUS.txt
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add experiment_outputs/rankq_v2 experiments/rankq_v2_progressive.py
+          git commit -m "Store RankQ v2 optimization results" || true
+          git push origin HEAD:agent/rankq-v2-copies-20260823
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rankq-v2-results
+          path: results/rankq_v2/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6
