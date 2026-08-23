@@ -1,4 +1,4 @@
-name: RankQ v3 dynamic progress SIFT1M experiment
+name: Analyze RankQ v3 SIFT1M results
 
 on:
   push:
@@ -10,97 +10,32 @@ permissions:
   contents: write
 
 concurrency:
-  group: rankq-v3-sift1m
+  group: rankq-v3-analysis
   cancel-in-progress: true
 
 jobs:
-  benchmark:
+  analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
-    env:
-      OMP_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/rankq-v3-progress-20260823
 
-      - name: Mark run started
-        run: |
-          mkdir -p experiment_outputs/rankq_v3
-          printf 'status=started\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v3/STATUS.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add experiment_outputs/rankq_v3/STATUS.txt
-          git commit -m "Mark RankQ v3 benchmark started [skip ci]" || true
-          git push origin HEAD:agent/rankq-v3-progress-20260823
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Assemble and compile
-        run: |
-          cat experiments/rankq_v3_dynamic.py.part* > experiments/rankq_v3_dynamic.py
-          python -m py_compile experiments/sift1m_1pct_experiment.py
-          python -m py_compile experiments/rankq_v2_progressive.py
-          python -m py_compile experiments/rankq_v3_dynamic.py
-          wc -l experiments/rankq_v3_dynamic.py
-
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install numpy==1.26.4 pandas==2.2.2 h5py==3.11.0 faiss-cpu==1.8.0.post1
+        run: python -m pip install numpy==1.26.4 pandas==2.2.2
 
-      - name: Download SIFT1M
-        run: |
-          mkdir -p data
-          curl -L --fail --retry 5 --retry-delay 5 \
-            https://ann-benchmarks.com/sift-128-euclidean.hdf5 \
-            -o data/sift-128-euclidean.hdf5
+      - name: Analyze results
+        run: python experiments/analyze_rankq_v3.py
 
-      - name: Run RankQ v3 suite
+      - name: Commit analysis
         run: |
-          rm -rf results/rankq_v3
-          mkdir -p results/rankq_v3
-          /usr/bin/time -v python experiments/rankq_v3_dynamic.py \
-            --dataset data/sift-128-euclidean.hdf5 \
-            --out results/rankq_v3 \
-            --queries 30 --threads 4 --M 8 --ef-construction 80 \
-            --selectivities 0.001,0.002,0.003,0.005,0.007,0.01,0.02 \
-            --efs 32,64,128,256 \
-            --bottom-b 8 --max-copies 4 --controller-max-copies 4 \
-            --geo-core 8 --progress-eps 0.01 --router-budget 2 \
-            2>&1 | tee results/rankq_v3/full_run.log
-
-      - name: Commit results
-        if: success()
-        run: |
-          cp -f results/rankq_v3/*.csv experiment_outputs/rankq_v3/ || true
-          cp -f results/rankq_v3/*.json experiment_outputs/rankq_v3/ || true
-          cp -f results/rankq_v3/full_run.log experiment_outputs/rankq_v3/ || true
-          printf 'status=success\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v3/STATUS.txt
-          git add experiments/rankq_v3_dynamic.py experiment_outputs/rankq_v3
-          git commit -m "Add RankQ v3 SIFT1M results [skip ci]" || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiment_outputs/rankq_v3/ANALYSIS.md experiment_outputs/rankq_v3/analysis_*.csv
+          git commit -m "Add computed RankQ v3 analysis [skip ci]" || true
           git push origin HEAD:agent/rankq-v3-progress-20260823
-
-      - name: Commit failure status
-        if: failure()
-        run: |
-          printf 'status=failure\nsource=%s\ntime=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > experiment_outputs/rankq_v3/STATUS.txt
-          if [ -f results/rankq_v3/full_run.log ]; then tail -n 300 results/rankq_v3/full_run.log > experiment_outputs/rankq_v3/FAILURE_LOG.txt; fi
-          git add experiment_outputs/rankq_v3
-          git commit -m "Record RankQ v3 failure [skip ci]" || true
-          git push origin HEAD:agent/rankq-v3-progress-20260823 || true
-
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rankq-v3-sift1m-results
-          path: results/rankq_v3/
-          if-no-files-found: warn
-          retention-days: 7
-          compression-level: 6
