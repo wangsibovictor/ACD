@@ -1,0 +1,50 @@
+[15:34:33] loaded SIFT1M: xb=(1000000, 128), queries=30, selectivities=[0.001, 0.002, 0.003, 0.005, 0.007, 0.01, 0.02]
+[15:35:46] base HNSW built: n=1,000,000, M=8, efC=80, seconds=73.29
+[15:35:46] layer-0 extracted: slots=16,000,000, actual edges=12,908,291, width=16
+[15:35:46] build L2: portals=15,653, rate=0.015653
+[15:36:07] L-cell assignment: portals=15,653, seconds=20.51, mean=63.89, median=48.0, p99=254.0
+[15:36:09] full quotient: cells=15,653, directed edges=4,705,588, mean degree=300.62, seconds=1.72
+[15:36:09] uniform bottom-8: edges=246,698, degree=15.76
+[15:36:09] uniform bottom-8: edges=246,882, degree=15.77
+[15:36:10] uniform bottom-8: edges=246,920, degree=15.77
+[15:36:10] uniform bottom-8: edges=246,882, degree=15.77
+[15:36:11] geometric core-8: directed edges=125,185, seconds=1.28
+[15:36:11] build L3: portals=1,964, rate=0.001964
+[15:36:24] L-cell assignment: portals=1,964, seconds=12.65, mean=509.16, median=372.0, p99=2176.4
+[15:36:25] full quotient: cells=1,964, directed edges=662,310, mean degree=337.23, seconds=0.90
+[15:36:25] uniform bottom-8: edges=31,062, degree=15.82
+[15:36:25] uniform bottom-8: edges=31,054, degree=15.81
+[15:36:25] uniform bottom-8: edges=31,062, degree=15.82
+[15:36:25] uniform bottom-8: edges=31,026, degree=15.80
+[15:36:25] geometric core-8: directed edges=15,712, seconds=0.15
+[15:36:26] s=0.001: level=L3, B=509.16, tau=0.509, rho=0.399, theory copies=2
+[15:36:33] s=0.002: level=L3, B=509.16, tau=1.018, rho=0.639, theory copies=1
+[15:36:40] s=0.003: level=L3, B=509.16, tau=1.527, rho=0.783, theory copies=1
+[15:36:47] s=0.005: level=L3, B=509.16, tau=2.546, rho=0.922, theory copies=1
+[15:36:54] s=0.007: level=L2, B=63.89, tau=0.447, rho=0.361, theory copies=3
+[15:37:03] s=0.01: level=L2, B=63.89, tau=0.639, rho=0.472, theory copies=2
+[15:37:12] s=0.02: level=L2, B=63.89, tau=1.278, rho=0.721, theory copies=1
+[15:37:21] complete: query rows=8,190, summary rows=273, out=results/rankq_v3
+	Command being timed: "python experiments/rankq_v3_dynamic.py --dataset data/sift-128-euclidean.hdf5 --out results/rankq_v3 --queries 30 --threads 4 --M 8 --ef-construction 80 --selectivities 0.001,0.002,0.003,0.005,0.007,0.01,0.02 --efs 32,64,128,256 --bottom-b 8 --max-copies 4 --controller-max-copies 4 --geo-core 8 --progress-eps 0.01 --router-budget 2"
+	User time (seconds): 487.38
+	System time (seconds): 1.05
+	Percent of CPU this job got: 288%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:49.19
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1876692
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 94891
+	Voluntary context switches: 100
+	Involuntary context switches: 65994
+	Swaps: 0
+	File system inputs: 1424
+	File system outputs: 2368
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
